@@ -25,6 +25,12 @@ socketio = SocketIO(app)
 class MyTerminal(Namespace):
     def on_connect(self):
         logging.info("== NEW CONNECTION TO NAMESPACE == " + self.namespace)
+
+        # this check helps to handle websocket reconnect when client goes offline for some time
+        if hasattr(self, 'fd'):
+            logging.info("== Already have file descriptor. Reusing it...")
+            return
+
         (child_pid, fd) = pty.fork()
         if child_pid == 0:
             subprocess.run(app.config["cmd"])
@@ -39,12 +45,12 @@ class MyTerminal(Namespace):
         pass
 
     def on_resize(self, data):
-        logging.debug(f"Resizing window to {data['rows']}x{data['cols']}")
-        self.set_winsize(self.fd, data["rows"], data["cols"])
-        pass
+        if hasattr(self, 'fd'):
+            logging.debug(f"Resizing window to {data['rows']}x{data['cols']}")
+            self.set_winsize(self.fd, data["rows"], data["cols"])
 
     def on_pty_input(self, data):
-        if self.fd:
+        if hasattr(self, 'fd'):
             logging.debug("received input from browser: %s" % data["input"])
             # write data to fd
             os.write(self.fd, data["input"].encode())
