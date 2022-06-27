@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from flask import Flask, render_template
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, Namespace, emit
 import pty
 import os
 import subprocess
@@ -18,85 +18,68 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 __version__ = "0.5.0.0"
 
 app = Flask(__name__, template_folder=".", static_folder=".", static_url_path="")
+app.terminals = []
 app.config["SECRET_KEY"] = "secret!"
-app.config["fd"] = None
-app.config["child_pid"] = None
 socketio = SocketIO(app)
 
+class MyTerminal(Namespace):
+    def on_connect(self):
+        logging.info("== NEW CONNECTION TO NAMESPACE == " + self.namespace)
+        (child_pid, fd) = pty.fork()
+        if child_pid == 0:
+            subprocess.run(app.config["cmd"])
+        else:
+            # memorize the fd of the pty
+            self.fd = fd
+            self.set_winsize(fd, 50, 50)
+            # start listening to websocket stream
+            socketio.start_background_task(self.read_and_forward_pty)
 
-def set_winsize(fd, row, col, xpix=0, ypix=0):
-    logging.debug("setting window size with termios")
-    winsize = struct.pack("HHHH", row, col, xpix, ypix)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    def on_disconnect(self):
+        pass
 
+    def on_resize(self, data):
+        logging.debug(f"Resizing window to {data['rows']}x{data['cols']}")
+        self.set_winsize(self.fd, data["rows"], data["cols"])
+        pass
 
-def read_and_forward_pty_output():
-    max_read_bytes = 1024 * 20
-    while True:
-        socketio.sleep(0.01)
-        if app.config["fd"]:
+    def on_pty_input(self, data):
+        if self.fd:
+            logging.debug("received input from browser: %s" % data["input"])
+            # write data to fd
+            os.write(self.fd, data["input"].encode())
+
+    def read_and_forward_pty(self):
+        max_read_bytes = 1024 * 20
+
+        # wait for data in fd and forward it to websocket
+        while True:
+            socketio.sleep(0.01)
             timeout_sec = 0
-            (data_ready, _, _) = select.select([app.config["fd"]], [], [], timeout_sec)
+            (data_ready, _, _) = select.select([self.fd], [], [], timeout_sec)
             if data_ready:
-                output = os.read(app.config["fd"], max_read_bytes).decode()
-                socketio.emit("pty-output", {"output": output}, namespace="/pty")
+                output = os.read(self.fd, max_read_bytes).decode()
+                socketio.emit("pty-output", {"output": output}, namespace = self.namespace)
 
+    def set_winsize(self, fd, row, col, xpix=0, ypix=0):
+        logging.debug("setting window size with termios")
+        winsize = struct.pack("HHHH", row, col, xpix, ypix)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
-
-@socketio.on("pty-input", namespace="/pty")
-def pty_input(data):
-    """write to the child pty. The pty sees this as if you are typing in a real
-    terminal.
-    """
-    if app.config["fd"]:
-        logging.debug("received input from browser: %s" % data["input"])
-        os.write(app.config["fd"], data["input"].encode())
-
-
-@socketio.on("resize", namespace="/pty")
-def resize(data):
-    if app.config["fd"]:
-        logging.debug(f"Resizing window to {data['rows']}x{data['cols']}")
-        set_winsize(app.config["fd"], data["rows"], data["cols"])
-
-
-@socketio.on("connect", namespace="/pty")
-def connect():
-    """new client connected"""
-    logging.info("new client connected")
-    if app.config["child_pid"]:
-        # already started child process, don't start another
-        return
-
-    # create child process attached to a pty we can read from and write to
-    (child_pid, fd) = pty.fork()
-    if child_pid == 0:
-        # this is the child process fork.
-        # anything printed here will show up in the pty, including the output
-        # of this subprocess
-        subprocess.run(app.config["cmd"])
-    else:
-        # this is the parent process fork.
-        # store child fd and pid
-        app.config["fd"] = fd
-        app.config["child_pid"] = child_pid
-        set_winsize(fd, 50, 50)
-        cmd = " ".join(shlex.quote(c) for c in app.config["cmd"])
-        # logging/print statements must go after this because... I have no idea why
-        # but if they come before the background task never starts
-        socketio.start_background_task(target=read_and_forward_pty_output)
-
-        logging.info("child pid is " + child_pid)
-        logging.info(
-            f"starting background task with command `{cmd}` to continously read "
-            "and forward pty output to client"
-        )
-        logging.info("task started")
-
+@app.route('/terminal', methods = ['POST'])
+def terminal():
+    termindex = len(app.terminals)+1
+    newterm = {
+        "name": termindex
+    }
+    app.terminals.append(newterm)
+    logging.info("== CREATING NEW NAMESPACE == ")
+    socketio.on_namespace(MyTerminal('/pty/{index}'.format(index=termindex)))
+    return newterm
 
 def main():
     parser = argparse.ArgumentParser(
@@ -135,9 +118,8 @@ def main():
         stream=sys.stdout,
         level=logging.DEBUG if args.debug else logging.INFO,
     )
-    logging.info(f"serving on http://{args.host}:{args.port}")
+    logging.info(f"serving on http://127.0.0.1:{args.port}")
     socketio.run(app, debug=args.debug, port=args.port, host=args.host)
-
 
 if __name__ == "__main__":
     main()
