@@ -27,39 +27,12 @@ This is a
 * way to see Flask and Flask-SocketIO in action
 * way to play around with Xterm.js in a meaningful environment
 
-## Installation
-
-There are a few ways to install and run.
-
 ### Clone & Run Locally
 Clone this repository, enter the `pyxtermjs` directory.
 
-If you have [nox](https://github.com/theacodes/nox) you can run the following.
-```
-> nox -s run
-```
-Nox takes care of setting up a virtual environment and running the right command for you. You can pass arguments to the server like this
-```
-> nox -s run -- --debug
-```
-
-If you don't have nox, you can run the following from inside a virtual environment.
 ```
 > pip install -r requirements.txt
 > python -m pyxtermjs
-> python -m pyxtermjs --debug
-```
-
-### Install
-You can install with [pipx](https://github.com/pipxproject/pipx) (recommended) or pip.
-```
-> pipx install pyxtermjs
-> pyxtermjs
-```
-
-Or you can try run latest version on PyPI
-```
-> pipx run pyxtermjs
 ```
 
 ## API
